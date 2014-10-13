@@ -249,13 +249,13 @@ module ActionView
   #     <%- end -%>
   #   <% end %>
   class PartialRenderer < AbstractRenderer
-    PREFIXED_PARTIAL_NAMES = ThreadSafe::Cache.new do |h, k|
+    NORMALIZED_PREFIXES = ThreadSafe::Cache.new do |h, k|
       h[k] = ThreadSafe::Cache.new
     end
 
     def initialize(*)
       super
-      @context_prefix = @lookup_context.prefixes.first
+      @object_path_prefixes = {}
     end
 
     def render(context, options, block)
@@ -379,7 +379,7 @@ module ActionView
     end
 
     def find_template(path, locals)
-      prefixes = path.include?(?/) ? [] : @lookup_context.prefixes
+      prefixes = @object_path_prefixes[path] || (path.include?(?/) ? [] : @lookup_context.prefixes)
       @lookup_context.find_template(path, prefixes, true, locals, @details)
     end
 
@@ -424,9 +424,6 @@ module ActionView
     # responds to +to_partial_path+, then +to_partial_path+ will be called and
     # will provide the path. If the object does not respond to +to_partial_path+,
     # then an +ArgumentError+ is raised.
-    #
-    # If +prefix_partial_path_with_controller_namespace+ is true, then this
-    # method will prefix the partial paths with a namespace.
     def partial_path(object = @object)
       object = object.to_model if object.respond_to?(:to_model)
 
@@ -437,30 +434,36 @@ module ActionView
       end
 
       if @view.prefix_partial_path_with_controller_namespace
-        prefixed_partial_names[path] ||= merge_prefix_into_object_path(@context_prefix, path.dup)
-      else
-        path
+        @object_path_prefixes[path] ||= normalized_prefixes_for_object_path(path.dup).uniq
       end
+
+      path
     end
 
-    def prefixed_partial_names
-      @prefixed_partial_names ||= PREFIXED_PARTIAL_NAMES[@context_prefix]
-    end
+    # If +prefix_partial_path_with_controller_namespace+ is true, then this
+    # method will return the prefixes for the namespaces where the partial could be located.
+    def normalized_prefixes_for_object_path(object_path)
+      prefixes = @lookup_context.prefixes
 
-    def merge_prefix_into_object_path(prefix, object_path)
-      if prefix.include?(?/) && object_path.include?(?/)
-        prefixes = []
-        prefix_array = File.dirname(prefix).split('/')
-        object_path_array = object_path.split('/')[0..-3] # skip model dir & partial
+      if object_path.include?(?/)
+        (prefixes + [""]).map do |prefix|
+          NORMALIZED_PREFIXES[prefix][object_path] ||= if prefix.include?(?/)
+            prefix_segments = []
+            prefix_array = File.dirname(prefix).split('/')
+            object_path_array = object_path.split('/')[0..-3] # skip model dir & partial
 
-        prefix_array.each_with_index do |dir, index|
-          break if dir == object_path_array[index]
-          prefixes << dir
+            prefix_array.each_with_index do |dir, index|
+              break if dir == object_path_array[index]
+              prefix_segments << dir
+            end
+
+            prefix_segments.join("/")
+          else
+            prefix
+          end
         end
-
-        (prefixes << object_path).join("/")
       else
-        object_path
+        prefixes
       end
     end
 
